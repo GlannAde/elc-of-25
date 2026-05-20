@@ -82,14 +82,15 @@ def init_board():
 
 
 def update_params():
-    """读取滑块参数并实时更新给算法层"""
-    yaw_kp = cv2.getTrackbarPos("yaw_kp", "Controls") / 1000.0
-    yaw_ki = cv2.getTrackbarPos("yaw_ki", "Controls") / 100000.0
-    yaw_kd = cv2.getTrackbarPos("yaw_kd", "Controls") / 100000.0
+    """讀取滑塊參數並實時更新給算法層 (針對速度模式優化數量級)"""
+    # 將除以 1000.0 改為除以 10.0，使 Kp 的調節範圍變成 0.1 ~ 100.0
+    yaw_kp = cv2.getTrackbarPos("yaw_kp", "Controls") / 10.0
+    yaw_ki = cv2.getTrackbarPos("yaw_ki", "Controls") / 10000.0  # 速度模式極少用 Ki
+    yaw_kd = cv2.getTrackbarPos("yaw_kd", "Controls") / 100.0  # 放大 Kd 範圍
 
-    pitch_kp = cv2.getTrackbarPos("pitch_kp", "Controls") / 1000.0
-    pitch_ki = cv2.getTrackbarPos("pitch_ki", "Controls") / 100000.0
-    pitch_kd = cv2.getTrackbarPos("pitch_kd", "Controls") / 100000.0
+    pitch_kp = cv2.getTrackbarPos("pitch_kp", "Controls") / 10.0
+    pitch_ki = cv2.getTrackbarPos("pitch_ki", "Controls") / 10000.0
+    pitch_kd = cv2.getTrackbarPos("pitch_kd", "Controls") / 100.0
 
     vel_rpm = max(1, cv2.getTrackbarPos("vel_rpm", "Controls"))
     acc = max(1, cv2.getTrackbarPos("acc", "Controls"))
@@ -168,23 +169,31 @@ def main():
                 correction_yaw = pid_yaw.compute(yaw_err)
                 correction_pitch = pid_pitch.compute(pitch_err)
 
-                # [硬件屏蔽] 发送给电机
-                stepper_yaw.emm_v5_move_to_angle(
-                    angle_deg=correction_yaw * GEAR_RATIO_YAW,
-                    vel_rpm=vel_rpm,
-                    acc=acc,
-                    abs_mode=False,
+                # Yaw 軸
+                out_yaw = correction_yaw * GEAR_RATIO_YAW
+                dir_yaw = 1 if out_yaw < 0 else 0
+                vel_yaw_cmd = min(int(abs(out_yaw)), vel_rpm)
+
+                # Pitch 軸
+                out_pitch = -correction_pitch * GEAR_RATIO_PITCH
+                dir_pitch = 1 if out_pitch < 0 else 0
+                vel_pitch_cmd = min(int(abs(out_pitch)), vel_rpm)
+
+                # 發送速度控制
+                stepper_yaw.emm_v5_vel_control(
+                    dir=dir_yaw, vel=vel_yaw_cmd, acc=acc, snF=False
                 )
-                stepper_pitch.emm_v5_move_to_angle(
-                    angle_deg=-correction_pitch * GEAR_RATIO_PITCH,
-                    vel_rpm=vel_rpm,
-                    acc=acc,
-                    abs_mode=False,
+                stepper_pitch.emm_v5_vel_control(
+                    dir=dir_pitch, vel=vel_pitch_cmd, acc=acc, snF=False
                 )
+
             elif status == Status.LOST:
                 pid_yaw.reset()
                 pid_pitch.reset()
 
+                # 🔴【核心安全防線】丟靶時必須立刻下發 0 轉速強行剎車，否則雲台會甩飛
+                stepper_yaw.emm_v5_vel_control(dir=0, vel=0, acc=acc, snF=False)
+                stepper_pitch.emm_v5_vel_control(dir=0, vel=0, acc=acc, snF=False)
             # --- 5. 防卡顿打印 (每 10 帧打印一次，降低 I/O 阻塞) ---
             if render_counter % 100 == 0:
                 status_map = {
