@@ -5,24 +5,27 @@ import numpy as np
 class KalmanFilter3D:
     def __init__(self, q_scale=0.2, r_xyz_scale=0.05, default_dt=1 / 120.0):
         self.dt = default_dt
-        # 6维状态量: [X, Y, Z, VX, VY, VZ] -> 均为物理三维空间量 (单位: 米)
-        # 3维观测量: [X, Y, Z] -> PnP 直接输出的物理三维坐标
         self.kf = cv2.KalmanFilter(6, 3)
 
-        # 状态转移矩阵 (F)
+        # --- [核心修改 1] 引入速度阻尼係數 (Damping) ---
+        # 0.5 代表每一影格的虛假速度都會被強制砍半，防止自卷放大
+        self.damping = 0.5
+        self.max_velocity = 3.0  # 限制目標在物理世界中的最大可能速度 (米/秒)
+
+        # 狀態轉移矩陣 (F)
         self.kf.transitionMatrix = np.array(
             [
                 [1, 0, 0, self.dt, 0, 0],
                 [0, 1, 0, 0, self.dt, 0],
                 [0, 0, 1, 0, 0, self.dt],
-                [0, 0, 0, 1, 0, 0],
-                [0, 0, 0, 0, 1, 0],
-                [0, 0, 0, 0, 0, 1],
+                [0, 0, 0, self.damping, 0, 0],
+                [0, 0, 0, 0, self.damping, 0],
+                [0, 0, 0, 0, 0, self.damping],
             ],
             np.float32,
         )
 
-        # 过程噪声协方差矩阵 (Q)
+        # 過程噪聲協方差矩陣 (Q)
         self.kf.processNoiseCov = (
             np.array(
                 [
@@ -43,7 +46,7 @@ class KalmanFilter3D:
         self.kf.errorCovPost = np.eye(6, dtype=np.float32) * 100.0
 
     def reset(self, init_x=0.0, init_y=0.0, init_z=0.0):
-        """丢靶后重新捕获时的【热启动】"""
+        """丟靶後重新捕獲時的【熱启动】"""
         self.kf.statePost = np.array(
             [[init_x], [init_y], [init_z], [0.0], [0.0], [0.0]], np.float32
         )
@@ -56,10 +59,23 @@ class KalmanFilter3D:
             self.kf.transitionMatrix[1, 4] = dt
             self.kf.transitionMatrix[2, 5] = dt
             self.kf.processNoiseCov = self.base_q * (dt / (1 / 120.0))
+
         prediction = self.kf.predict()
         return prediction[0, 0], prediction[1, 0], prediction[2, 0]
 
     def update(self, x, y, z):
         measure = np.array([[np.float32(x)], [np.float32(y)], [np.float32(z)]])
         estimate = self.kf.correct(measure)
+
+        # --- [核心修改 2] 硬上限裁剪：防止速度項 (索引 3, 4, 5) 突變爆炸 ---
+        self.kf.statePost[3, 0] = np.clip(
+            self.kf.statePost[3, 0], -self.max_velocity, self.max_velocity
+        )
+        self.kf.statePost[4, 0] = np.clip(
+            self.kf.statePost[4, 0], -self.max_velocity, self.max_velocity
+        )
+        self.kf.statePost[5, 0] = np.clip(
+            self.kf.statePost[5, 0], -self.max_velocity, self.max_velocity
+        )
+
         return estimate[0, 0], estimate[1, 0], estimate[2, 0]
