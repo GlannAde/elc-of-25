@@ -1,7 +1,9 @@
 import math
+import threading
 import time
 
 import cv2
+import serial
 
 # --- 导入视觉与控制模块 ---
 from models.cam import Camera
@@ -10,14 +12,20 @@ from models.pid import PIDController
 
 # [硬件屏蔽] from models.status import GPIN
 # --- 导入硬件驱动模块 ---
-# [硬件屏蔽]
 from models.stepper import EmmMotor
 from models.tracker import Status, Tracker
 
 # ==================== 系统参数配置区 ====================
 CAMERA_INDEX = 0  # 摄像头索引 (如果在 Windows 测试，通常是 0 或 1)
 PORT = "/dev/ttyACM0"
-# PITCH_PORT = "/dev/ttyACM1"
+# 在主執行緒中僅開啟「一次」實體序列埠，並建立一把鎖
+shared_serial = serial.Serial(PORT, baudrate=115200, timeout=1)
+serial_lock = threading.Lock()
+
+# 將同一個實體連線與鎖注入到兩個馬達控制實例中
+stepper_yaw = EmmMotor(shared_ser=shared_serial, ser_lock=serial_lock, motor_id=1)
+stepper_pitch = EmmMotor(shared_ser=shared_serial, ser_lock=serial_lock, motor_id=2)
+
 
 USE_KF = True  # 是否启用 3D 卡尔曼滤波预测
 SHOW_WINDOWS = True  # 是否显示调试画面和参数控制台 (设为 False 可榨干极限性能)
@@ -36,14 +44,10 @@ tracker = Tracker(
     real_width=21.0,
     real_height=17.5,
     use_kf=True,
-    imu_port="/dev/ttyACM1",     # 你的 IMU 串口
+    imu_port="/dev/ttyACM1",  # 你的 IMU 串口
     imu_baud=921600,
-    imu_fusion_alpha=0.95
+    imu_fusion_alpha=0.95,
 )
-
-# [硬件屏蔽] 电机初始化
-stepper_yaw = EmmMotor(port=PORT, baudrate=115200, timeout=1, motor_id=1)
-stepper_pitch = EmmMotor(port=PORT, baudrate=115200, timeout=1, motor_id=2)
 
 # PID 初始化 (保留 PID 对象用于在终端观察输出运算结果)
 pid_yaw = PIDController(Kp=0.0, Ki=0.0, Kd=0.0, dt=1 / 120.0)
@@ -182,7 +186,7 @@ def main():
                 pid_pitch.reset()
 
             # --- 5. 防卡顿打印 (每 10 帧打印一次，降低 I/O 阻塞) ---
-            if render_counter % 100== 0:
+            if render_counter % 100 == 0:
                 status_map = {
                     Status.TRACK: "TRACKING",
                     Status.TMP_LOST: "PREDICTING",

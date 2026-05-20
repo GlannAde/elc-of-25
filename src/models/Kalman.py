@@ -22,14 +22,25 @@ class KalmanFilter3D:
             np.float32,
         )
 
-        # 观测矩阵 (H)
-        self.kf.measurementMatrix = np.array(
-            [[1, 0, 0, 0, 0, 0], [0, 1, 0, 0, 0, 0], [0, 0, 1, 0, 0, 0]], np.float32
+        # 过程噪声协方差矩阵 (Q)
+        self.kf.processNoiseCov = (
+            np.array(
+                [
+                    [0.05, 0, 0, 0, 0, 0],
+                    [0, 0.05, 0, 0, 0, 0],
+                    [0, 0, 0.05, 0, 0, 0],
+                    [0, 0, 0, 0.4, 0, 0],
+                    [0, 0, 0, 0, 0.4, 0],
+                    [0, 0, 0, 0, 0, 0.4],
+                ],
+                dtype=np.float32,
+            )
+            * q_scale
         )
 
-        self.kf.processNoiseCov = np.eye(6, dtype=np.float32) * q_scale
-        self.kf.measurementNoiseCov = np.eye(3, dtype=np.float32) * r_xyz_scale
         self.base_q = self.kf.processNoiseCov.copy()
+        self.kf.measurementNoiseCov = np.eye(3, dtype=np.float32) * r_xyz_scale
+        self.kf.errorCovPost = np.eye(6, dtype=np.float32) * 100.0
 
     def reset(self, init_x=0.0, init_y=0.0, init_z=0.0):
         """丢靶后重新捕获时的【热启动】"""

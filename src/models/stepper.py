@@ -39,52 +39,59 @@ class EmmMotor:
     motor_id : 电机地址ID
     """
 
-    def __init__(self, port="COM13", baudrate=115200, timeout=1, motor_id=1,sync = True):
-        # 保留参数
+    def __init__(
+        self,
+        port="COM13",
+        baudrate=115200,
+        timeout=1,
+        motor_id=1,
+        sync=True,
+        shared_ser=None,
+        ser_lock=None,
+    ):
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
         self.motor_id = motor_id
-        # 初始化
-        self.serial_port = None
-        # 打开串口
-        self._init_serial()
 
-        # ================= 新增：异步发送队列与守护线程 =================
-        self.cmd_queue = queue.Queue(maxsize=100)  # 指令缓冲区
+        # 使用傳入的共用序列埠與鎖，若無則自行初始化
+        self.serial_port = shared_ser
+        self.ser_lock = ser_lock if ser_lock is not None else threading.Lock()
+
+        if self.serial_port is None:
+            self._init_serial()
+
+        self.cmd_queue = queue.Queue(maxsize=100)
         self.running = True
         self.send_thread = threading.Thread(target=self._send_loop, daemon=True)
         self.send_thread.start()
-        # ================================================================
         self.Sync = sync
 
+    # 2. 修改 _send_loop，寫入時加上安全鎖
     def _send_loop(self):
-        """后台发送守护线程：不断从队列取指令发送，不阻塞主视觉线程"""
         while self.running:
             try:
-                # 阻塞等待指令，超时设为0.1秒以便能响应退出标志
                 cmd_bytes = self.cmd_queue.get(timeout=0.1)
                 if self.serial_port and self.serial_port.is_open:
-                    self.serial_port.write(cmd_bytes)
+                    with self.ser_lock:  # 🔒 確保同一時間只有一個執行緒在對匯流排寫入
+                        self.serial_port.write(cmd_bytes)
             except queue.Empty:
                 pass
-            except serial.SerialException as e:
+            except Exception as e:
                 print(f"[错误] 串口 {self.port} 后台发送异常: {e}")
 
-    def _send_cmd(self, cmd_bytes, sync=True):
+    def _send_cmd(self, cmd_bytes, sync=False):
         """
         核心发送接口
         :param sync: True 代表同步阻塞发送 (用于读参数), False 代表异步放队列 (默认，用于高频控制)
         """
         if sync:
-            # 同步发送：必须立刻发出去，因为下一行代码就要读返回值
             try:
                 if self.serial_port and self.serial_port.is_open:
                     self.serial_port.write(cmd_bytes)
             except Exception as e:
                 print(f"[错误] 串口 {self.port} 同步发送异常: {e}")
         else:
-            # 异步发送：扔进队列就跑，主线程瞬间返回
             try:
                 self.cmd_queue.put_nowait(cmd_bytes)
             except queue.Full:
@@ -114,23 +121,6 @@ class EmmMotor:
             raise Exception("串口初始化失败：pyserial 模块可能未正确安装或被覆盖")
         except serial.SerialException as e:
             raise Exception(f"打开串口 {self.port} 失败: {e}")
-
-    # 把字节流扔进串口
-    def _send_cmd(self, cmd_bytes):
-        try:
-            if self.serial_port and self.serial_port.is_open:
-                self.serial_port.write(cmd_bytes)
-            else:
-                print(f"[警告] 串口 {self.port} 未打开，指令丢弃")
-        except serial.SerialTimeoutException:
-            print(f"[警告] 串口 {self.port} 发送超时")
-        except Exception as e:
-            print(f"[错误] 串口 {self.port} 发送异常: {e}")
-
-        # 发送数据
-        self.serial_port.write(cmd_bytes)
-
-    """实现核心通信协议"""
 
     def emm_v5_read_sys_params(self, addr=None, s: SysParams = None):
         """
